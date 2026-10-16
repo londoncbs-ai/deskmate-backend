@@ -495,6 +495,8 @@ async def run_tool(agent, name, a):
         did = db.run("INSERT INTO duties(agent_id,title,detail,due,due_ts,priority,checklist,recur,auto,source,created_by,created_at,project_id,start_ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (tgt["id"], a["title"][:200], str(a.get("detail", ""))[:2000], due, ts, a.get("priority") or "normal", cl, a.get("repeat") or "", 1,
                       "self" if tgt["id"] == aid else "agent", (me or {}).get("name", "admin"), db.now(), pid, start_ts))
+        if me and me.get("_meeting_id") and not a.get("do_now"):
+            db.update("duties", did, auto=0, source="meeting", created_by="admin", ref=f"after-meeting:{me['_meeting_id']}")
         started = False
         if a.get("do_now"):
             from . import agents as _agents

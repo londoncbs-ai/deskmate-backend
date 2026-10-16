@@ -1,3 +1,5 @@
+import hmac
+import logging
 import json
 import math
 import os
@@ -956,6 +958,7 @@ async def agent_speak(aid: int, s: SpeakIn):
 class MeetingIn(BaseModel):
     agent_ids: List[int]
     title: str = ""
+    chat: bool = False
 
 
 def _meeting_public(m):
@@ -968,15 +971,15 @@ def _meeting_public(m):
 @app.post("/api/meetings")
 def meeting_create(m: MeetingIn):
     try:
-        mid = agents.start_meeting(m.agent_ids[:6], m.title[:80])
+        mid = agents.start_meeting(m.agent_ids[:6], m.title[:80], chat=m.chat)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return _meeting_public(agents.meeting_detail(mid))
 
 
 @app.get("/api/meetings")
-def meeting_list():
-    return [dict(r) for r in db.q("SELECT id,title,kind,status,agent_ids,created_at,ended_at,summary FROM meetings ORDER BY id DESC LIMIT 40")]
+def meeting_list(chat: bool = False):
+    return [dict(r) for r in db.q("SELECT id,title,kind,status,agent_ids,created_at,ended_at,summary FROM meetings WHERE (kind='admin_chat')=? ORDER BY id DESC LIMIT 40", (int(chat),))]
 
 
 @app.get("/api/meetings/{mid}")
@@ -994,7 +997,7 @@ class RTIn(BaseModel):
 @app.post("/api/meetings/{mid}/realtime")
 async def meeting_realtime(mid: int, body: RTIn):
     m = agents.meeting_detail(mid)
-    if not m or m["status"] != "live":
+    if not m or m["status"] != "live" or m["kind"] == "admin_chat":
         raise HTTPException(404, "meeting not found or ended")
     ag = next((a for a in m["agents"] if a["id"] == body.agent_id), None)
     if not ag:
@@ -1002,7 +1005,7 @@ async def meeting_realtime(mid: int, body: RTIn):
     group = m["kind"] != "one_to_one"
     listener = (not group) or m["agents"][0]["id"] == ag["id"]
     prompt = agents.meeting_prompt(ag, m["agents"], m["kind"], live=True)
-    s = await llm.realtime_meeting_secret(prompt, ag["openai_voice"], agents.realtime_tools(ag), listener=listener, auto_reply=not group)
+    s = await llm.realtime_meeting_secret(prompt, ag["openai_voice"], agents.realtime_tools(ag), listener=listener, auto_reply=False)
     costs.open_voice_session(mid, ag["id"], listener)
     return {**s, "agent_id": ag["id"], "listener": listener, "group": group}
 
@@ -1021,9 +1024,9 @@ async def meeting_tool(mid: int, body: MToolIn):
         raise HTTPException(404, "meeting not active")
     if body.name not in {t["name"] for t in agents.tools_for(ag)}:
         raise HTTPException(400, "unknown tool")
-    gate = agents.meeting_gate(mid, body.name)
+    gate = agents.meeting_gate(mid, body.name, body.args)
     try:
-        res, link = (gate, None) if gate else await agents.run_agent_tool({**ag, "live_admin": True}, body.name, body.args)
+        res, link = (gate, None) if gate else await agents.run_agent_tool({**ag, "live_admin": True, "_meeting_id": mid}, body.name, body.args)
     except Exception as e:
         res, link = {"error": f"{type(e).__name__}"}, None
     db.log("agent", f"{ag['name']} (live meeting) used {body.name}")
@@ -1600,7 +1603,9 @@ def auth_status(request: Request):
     if sess:
         w = directory.get(sess["ws"]) or {}
         ws = {"id": sess["ws"], "name": w.get("name", "")}
-    return {"needs_setup": False, "signup_open": directory.SIGNUPS_OPEN, "contact_email": os.getenv("CONTACT_EMAIL", "").strip(), "authenticated": bool(sess), "username": sess["username"] if sess else None,
+    return {"needs_setup": False, "signup_open": directory.SIGNUPS_OPEN, "signup_code_required": bool(directory.SIGNUP_CODE),
+            "signup_public": directory.SIGNUPS_OPEN and not directory.SIGNUP_CODE,  # whether the public site should offer "create a workspace" at all
+            "contact_email": os.getenv("CONTACT_EMAIL", "").strip(), "authenticated": bool(sess), "username": sess["username"] if sess else None,
             "role": sess["role"] if sess else None, "must_change": bool(sess and sess["must_change"]), "workspace": ws,
             "name": people.display_name(sess) if sess else None, "title": (sess.get("title") or "") if sess else "",
             "platform": bool(sess and sess["ws"] == db.MAIN and sess["role"] == "owner")}
@@ -1611,6 +1616,7 @@ class SignupIn(BaseModel):
     email: str
     password: str
     team: str = ""
+    code: str = ""  # the team's access code, when the server asks for one
 
 
 EMAIL_OK = re.compile(r"^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,200}\.[A-Za-z]{2,}$")
@@ -1622,6 +1628,9 @@ def auth_signup(b: SignupIn, request: Request):
     ip, ua = request.state.ip, request.state.ua
     if not directory.SIGNUPS_OPEN:
         raise HTTPException(403, "Sign-ups are closed on this server.")
+    if directory.SIGNUP_CODE and not hmac.compare_digest((b.code or "").strip().encode(), directory.SIGNUP_CODE.encode()):
+        logging.getLogger("deskmates.security").warning("company sign-up refused: missing or wrong access code (from %s)", ip)
+        raise HTTPException(403, "Creating a company needs an access code from the Deskmates team. Contact us if you would like one.")
     email = b.email.strip().lower()
     company = b.company.strip()[:80]
     if not company:
