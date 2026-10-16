@@ -1070,6 +1070,25 @@ class MeetingMsg(BaseModel):
     text: str
 
 
+class MeetingAttachmentIn(BaseModel):
+    doc_id: int
+
+
+@app.post("/api/meetings/{mid}/attachments")
+def meeting_attach(mid: int, body: MeetingAttachmentIn):
+    """Send a document from the shared drive into a team chat."""
+    meeting = db.q1("SELECT kind,status FROM meetings WHERE id=?", (mid,))
+    if not meeting or meeting["kind"] != "admin_chat" or meeting["status"] != "live":
+        raise HTTPException(404, "chat not found or ended")
+    doc = db.q1("SELECT id,agent_id,title,kind,mime,body FROM documents WHERE id=?", (body.doc_id,))
+    if not doc or doc["agent_id"] != 0:
+        raise HTTPException(404, "file not found in the shared drive")
+    attachment = {"doc_id": doc["id"], "title": doc["title"], "kind": doc["kind"], "mime": doc["mime"] or "", "size": len(doc["body"] or "")}
+    db.run("INSERT INTO meeting_msgs(meeting_id,role,text,tools,attachments,created_at) VALUES(?,?,?,?,?,?)",
+           (mid, "admin", "", "[]", json.dumps([attachment], ensure_ascii=False), db.now()))
+    return {"ok": True, "attachment": attachment}
+
+
 @app.post("/api/meetings/{mid}/message")
 async def meeting_message(mid: int, body: MeetingMsg):
     llm.client()
