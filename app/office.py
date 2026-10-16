@@ -65,7 +65,26 @@ def _agent_by_email(addr):
 
 def _is_internal(addr):
     addr = parseaddr(addr or "")[1].lower()
-    return addr == admin_address().lower() or addr == "admin" or bool(_agent_by_email(addr))
+    if addr == admin_address().lower() or addr == "admin" or _agent_by_email(addr):
+        return True
+    # Addresses on the workspace's own domain are delivered to the in-app inbox,
+    # even when a teammate has no external mailbox connected.
+    return bool(domain() and "@" in addr and addr.rsplit("@", 1)[1] == domain().lower().lstrip("@"))
+
+
+def _internal_agent(addr):
+    """Find a named teammate for a local company alias, including generated addresses."""
+    found = _agent_by_email(addr)
+    if found:
+        return found
+    local = parseaddr(addr or "")[1].lower().split("@", 1)[0]
+    if not local:
+        return None
+    for row in db.q("SELECT * FROM agents WHERE archived=0"):
+        alias = re.sub(r"[^a-z0-9]+", ".", (row["name"] or "").lower()).strip(".")
+        if local in (alias, alias.replace(".", "")):
+            return row
+    return None
 
 
 # ---------- mail ----------
@@ -211,7 +230,7 @@ async def deliver(mail_id):
     atts = db.jload(m.get("attachments"), [])
     for a in to_list:
         if _is_internal(a):
-            tgt = _agent_by_email(a)
+            tgt = _internal_agent(a)
             _store(tgt["id"] if tgt else ADMIN_BOX, "inbox", m["from_addr"], a, m["subject"], m["body"], "unread", 0, m["cc"], m["thread_id"], attachments=json.dumps(atts))
             for f in atts:  # a colleague who is sent a file can open it (the admin can open everything)
                 if tgt and not db.q1("SELECT 1 x FROM shares WHERE item_type='file' AND item_id=? AND with_agent=?", (f["id"], tgt["id"])):
