@@ -148,7 +148,7 @@ def descendants(fid):
 def copy_doc(d, owner, folder_id):
     """Duplicate a document (and its stored file, if it has one) into another drive or folder. -> new id."""
     fp = d["file_path"] or ""
-    if d["kind"] == "file" and fp:
+    if fp:
         import shutil
         import uuid
         from pathlib import Path
@@ -366,12 +366,15 @@ def download_parts(r, docs_as="md"):
     import io
     from pathlib import Path
     safe = "".join(c for c in r["title"] if c.isalnum() or c in " -_")[:60].strip() or "document"
-    if r["kind"] == "file":
+    if r.get("file_path"):
         p = db.data_dir() / "files" / Path(r["file_path"]).name
         if not p.exists():
             raise FileNotFoundError("The file is missing")
         ext = p.suffix
-        return (f"{safe}{ext if not safe.endswith(ext) else ''}", r["mime"] or "application/octet-stream", p.read_bytes())
+        stem = "".join(c for c in Path(r["title"]).stem if c.isalnum() or c in " -_")[:60].strip() or "file"
+        return (f"{stem}{ext}", r.get("mime") or "application/octet-stream", p.read_bytes())
+    if r["kind"] == "file":
+        raise FileNotFoundError("The file is missing")
     if r["kind"] == "chart":
         return (f"{safe}.svg", "image/svg+xml", r["body"].encode("utf-8"))
     if r["kind"] == "sheet":
