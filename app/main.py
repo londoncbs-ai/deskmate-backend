@@ -21,6 +21,8 @@ from . import access, admin_agent, agent_tools, agents, alerts, apps_api, backup
 
 app = FastAPI(title="Deskmates", docs_url=None, redoc_url=None, openapi_url=None)  # no public API docs
 app.add_middleware(security.Security)
+from . import company_workspaces
+app.include_router(company_workspaces.router)
 app.include_router(office_api.router)
 app.include_router(team_api.router)
 app.include_router(apps_api.router)
@@ -1625,7 +1627,7 @@ def auth_status(request: Request):
     return {"needs_setup": False, "signup_open": directory.SIGNUPS_OPEN, "signup_code_required": bool(directory.SIGNUP_CODE),
             "signup_public": directory.SIGNUPS_OPEN and not directory.SIGNUP_CODE,  # whether the public site should offer "create a workspace" at all
             "contact_email": os.getenv("CONTACT_EMAIL", "").strip(), "authenticated": bool(sess), "username": sess["username"] if sess else None,
-            "role": sess["role"] if sess else None, "must_change": bool(sess and sess["must_change"]), "workspace": ws,
+            "role": sess["role"] if sess else None, "must_change": bool(sess and sess["must_change"]), "workspace": ws, "subworkspace": bool(sess and sess.get("company_ws")),
             "name": people.display_name(sess) if sess else None, "title": (sess.get("title") or "") if sess else "",
             "platform": bool(sess and sess["ws"] == db.MAIN and sess["role"] == "owner")}
 
