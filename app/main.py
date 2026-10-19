@@ -987,9 +987,39 @@ def meeting_list(chat: bool = False):
 @app.get("/api/meetings/{mid}")
 def meeting_get(mid: int):
     m = agents.meeting_detail(mid)
-    if not m:
+    if not m or m.get("status") == "deleted":
         raise HTTPException(404)
     return _meeting_public(m)
+
+
+class MeetingTitle(BaseModel):
+    title: str
+
+
+@app.patch("/api/meetings/{mid}")
+def meeting_rename(mid: int, body: MeetingTitle):
+    row = db.q1("SELECT kind FROM meetings WHERE id=?", (mid,))
+    title = re.sub(r"\s+", " ", body.title).strip()[:80]
+    if not row or row["kind"] != "admin_chat":
+        raise HTTPException(404, "chat not found")
+    if not title:
+        raise HTTPException(400, "Give this chat a name.")
+    db.update("meetings", mid, title=title)
+    return {"id": mid, "title": title}
+
+
+@app.delete("/api/meetings/{mid}")
+def meeting_delete(mid: int):
+    row = db.q1("SELECT kind FROM meetings WHERE id=?", (mid,))
+    if not row or row["kind"] != "admin_chat":
+        raise HTTPException(404, "chat not found")
+    conn, lock = db._get()
+    with lock:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM meeting_msgs WHERE meeting_id=?", (mid,))
+        conn.execute("DELETE FROM meetings WHERE id=? AND kind='admin_chat'", (mid,))
+        conn.commit()
+    return {"ok": True}
 
 
 class RTIn(BaseModel):
@@ -1093,9 +1123,16 @@ def meeting_attach(mid: int, body: MeetingAttachmentIn):
 
 @app.post("/api/meetings/{mid}/message")
 async def meeting_message(mid: int, body: MeetingMsg):
-    llm.client()
     if not body.text.strip():
         raise HTTPException(400, "empty message")
+    meeting = agents.meeting_detail(mid)
+    if not meeting or meeting.get("kind") != "admin_chat" or meeting.get("status") != "live":
+        raise HTTPException(404, "chat not found")
+    if meeting.get("title") == "New chat":
+        first_line = re.sub(r"\s+", " ", body.text.strip()).strip()[:80]
+        if first_line:
+            db.run("UPDATE meetings SET title=? WHERE id=? AND title='New chat'", (first_line, mid))
+    llm.client()
     return sse(agents.meeting_message(mid, body.text.strip()))
 
 

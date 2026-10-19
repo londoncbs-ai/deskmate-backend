@@ -263,7 +263,7 @@ def start_meeting(agent_ids, title="", chat=False):
     if not ags:
         raise ValueError("pick at least one agent")
     kind = "admin_chat" if chat else "one_to_one" if len(ags) == 1 else "group"
-    title = title or ("Chat: " + ", ".join(a["name"] for a in ags) if chat else f"1:1 with {ags[0]['name']}" if kind == "one_to_one" else "Team meeting")
+    title = title or ("New chat" if chat else f"1:1 with {ags[0]['name']}" if kind == "one_to_one" else "Team meeting")
     mid = db.run("INSERT INTO meetings(title,kind,agent_ids,created_at) VALUES(?,?,?,?)", (title, kind, json.dumps([a["id"] for a in ags]), db.now()))
     for a in ags:
         team.log_event(a["id"], "meeting", "calendar", f"Joined a meeting with the admin: {title}", {"meeting": mid})
