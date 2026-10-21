@@ -11,10 +11,10 @@ from . import db, llm
 
 BASE = "https://api.elevenlabs.io/v1"
 AGENT_LLM = os.getenv("ELEVENLABS_AGENT_LLM", "gpt-4.1")
-# Full Eleven v4: ElevenLabs' most emotive model (90+ languages incl. Urdu, Bengali). Adds ~1s per reply vs eleven_v4_turbo (~0.2s).
-# Switch with ELEVENLABS_AGENT_TTS=eleven_v4_turbo, or per language with ELEVENLABS_AGENT_TTS_<CODE>.
+# Turbo keeps natural v4 speech while reducing the per-reply synthesis delay. Choose full v4 when expressiveness matters more than response speed.
+# Override with ELEVENLABS_AGENT_TTS=eleven_v4, or per language with ELEVENLABS_AGENT_TTS_<CODE>.
 TTS_BY_LANG = {}
-DEFAULT_TTS = os.getenv("ELEVENLABS_AGENT_TTS", "eleven_v4")
+DEFAULT_TTS = os.getenv("ELEVENLABS_AGENT_TTS", "eleven_v4_turbo")
 
 db.run("CREATE TABLE IF NOT EXISTS el_agents(code TEXT PRIMARY KEY, agent_id TEXT, voice_id TEXT, model TEXT, created_at REAL)")
 db.run("CREATE TABLE IF NOT EXISTS el_tools(name TEXT PRIMARY KEY, tool_id TEXT)")
@@ -257,3 +257,18 @@ async def warm_agents():
                 await apply_tuning(p["id"])
             except Exception as e:
                 db.log("voice", f"Could not prepare the agent for '{p['name']}' yet ({type(e).__name__}); it will be created on the first call")
+
+
+async def warm_agents_all():
+    """Prepare call voices for each active company, not only the legacy main tenant."""
+    from . import directory
+    for workspace_id in directory.active_ids():
+        try:
+            with db.use(workspace_id):
+                await warm_agents()
+        except Exception as e:
+            try:
+                with db.use(workspace_id):
+                    db.log("voice", f"Could not prewarm ElevenLabs voices ({type(e).__name__}); first call will prepare its agent")
+            except Exception:
+                pass

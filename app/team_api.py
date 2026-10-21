@@ -547,8 +547,9 @@ def pulse():
 def central_get():
     return {
         "calls_enabled": voices.get_setting("calls_enabled", "1") == "1",
+        "call_route": voices.get_setting("call_route", "whatsapp_then_phone"),
         "voice_engine": voices.get_setting("voice_engine", "openai"),
-        "messaging_policy": voices.get_setting("messaging_policy", "approve"),
+        "messaging_policy": voices.get_setting("messaging_policy", "auto"),
         "admin_phone": voices.get_setting("admin_phone", ""),
         "live_question_timeout": int(voices.get_setting("live_question_timeout", "75") or 75),
         "discuss_email": voices.get_setting("discuss_email", "1") == "1",
@@ -562,6 +563,7 @@ def central_get():
 
 class CentralIn(BaseModel):
     calls_enabled: Optional[bool] = None
+    call_route: Optional[str] = None
     work_paused: Optional[bool] = None
     max_tasks_per_day: Optional[int] = None
     company_tasks_per_day: Optional[int] = None
@@ -572,6 +574,10 @@ class CentralIn(BaseModel):
 def central_put(c: CentralIn):
     if c.calls_enabled is not None:
         voices.set_setting("calls_enabled", "1" if c.calls_enabled else "0")
+    if c.call_route is not None:
+        if c.call_route not in ("whatsapp_then_phone", "whatsapp", "phone"):
+            raise HTTPException(400, "Choose WhatsApp with phone fallback, WhatsApp only, or phone only.")
+        voices.set_setting("call_route", c.call_route)
     if c.work_paused is not None:
         voices.set_setting("work_paused", "1" if c.work_paused else "0")
     for key, val, lo, hi in (("max_tasks_per_day", c.max_tasks_per_day, 1, 500), ("company_tasks_per_day", c.company_tasks_per_day, 1, 2000), ("work_pace_seconds", c.work_pace_seconds, 0, 600)):
@@ -614,6 +620,8 @@ def company_put(c: CompanyIn):
             zoneinfo.ZoneInfo(c.timezone)
         except Exception:
             raise HTTPException(400, "Unknown time zone")
+    if c.website is not None and c.website.strip() != voices.get_setting("company_website", ""):
+        voices.set_setting("company_website_kb_id", "")
     for key, val in (("company_name", c.name), ("company_about", c.about), ("company_website", c.website), ("timezone", c.timezone)):
         if val is not None:
             voices.set_setting(key, val.strip()[:2000])
@@ -631,19 +639,22 @@ async def company_learn(l: LearnIn):
     import asyncio
     from . import webdemo
     try:
-        r = await asyncio.wait_for(webdemo.learn(l.url.strip()[:500]), 100)
+        saved_kb = str(voices.get_setting("company_website_kb_id", "") or "")
+        r = await asyncio.wait_for(webdemo.learn(l.url.strip()[:500], kb_id=int(saved_kb) if saved_kb.isdigit() else None), 180)
     except webdemo.Blocked as e:
         raise HTTPException(400, str(e))
     except asyncio.TimeoutError:
         raise HTTPException(504, "That website took too long to read.")
     name = voices.get_setting("company_name", "") or r["company"]
     db.update("knowledge_bases", r["kb_id"], name=name)
+    voices.set_setting("company_website_kb_id", str(r["kb_id"]))
     if not voices.get_setting("company_about", ""):
         about = (r.get("info") or {}).get("what_they_do") or ""
         if about:
             voices.set_setting("company_about", about[:2000])
     files.sync_company_doc()
-    return {"kb_id": r["kb_id"], "sections": r["sections"], "pages": len(r["pages"]), "about": voices.get_setting("company_about", "")}
+    return {"kb_id": r["kb_id"], "sections": r["sections"], "pages": len(r["pages"]),
+            "coverage_note": r.get("coverage_note"), "about": voices.get_setting("company_about", "")}
 
 
 # ---------- things to discuss with the admin ----------
